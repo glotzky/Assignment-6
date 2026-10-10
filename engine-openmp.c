@@ -80,9 +80,12 @@ static void free_local_instance(struct local_instance *local) {
 static int scan_chunk(const char *data, long start, long end, long file_size,
                       const char *target, size_t target_length,
                       struct local_instance *local) {
-    for (long position = start;
-         position < end && position + (long)target_length <= file_size;
-         position++) {
+    long position = start;
+
+    while (position < end &&
+           position + (long)target_length <= file_size) {
+        const char *candidate = memchr(data + position, target[0],
+                                       (size_t)(end - position));
         long line_start;
         long line_end;
         long visible_end;
@@ -90,42 +93,50 @@ static int scan_chunk(const char *data, long start, long end, long file_size,
         long trimmed_end;
         size_t line_length;
 
-        if (memcmp(data + position, target, target_length) != 0 ||
-            memchr(data + position, '\n', target_length) != NULL) continue;
-        line_start = position;
-        while (line_start > 0 && data[line_start - 1] != '\n') line_start--;
-        line_end = position;
-        while (line_end < file_size && data[line_end] != '\n') line_end++;
-        visible_end = line_end;
-        for (long i = line_start; i < line_end; i++) {
-            if (data[i] == '\0') {
-                visible_end = i;
-                break;
+        if (candidate == NULL) break;
+        position = (long)(candidate - data);
+        if (position + (long)target_length <= file_size &&
+            memcmp(data + position, target, target_length) == 0 &&
+            memchr(data + position, '\n', target_length) == NULL) {
+            line_start = position;
+            while (line_start > 0 && data[line_start - 1] != '\n') line_start--;
+            line_end = position;
+            while (line_end < file_size && data[line_end] != '\n') line_end++;
+            visible_end = line_end;
+            for (long i = line_start; i < line_end; i++) {
+                if (data[i] == '\0') {
+                    visible_end = i;
+                    break;
+                }
+            }
+            if (position + (long)target_length <= visible_end) {
+                trimmed_start = line_start;
+                trimmed_end = visible_end;
+                while (trimmed_start < trimmed_end &&
+                       isspace((unsigned char)data[trimmed_start])) trimmed_start++;
+                while (trimmed_end > trimmed_start &&
+                       isspace((unsigned char)data[trimmed_end - 1])) trimmed_end--;
+                if (position >= trimmed_start &&
+                    position + (long)target_length <= trimmed_end) {
+                    line_length = (size_t)(trimmed_end - trimmed_start);
+                    if (local->used == local->capacity) {
+                        int new_capacity = local->capacity == 0 ? 8 : local->capacity * 2;
+                        char **grown = realloc(local->items,
+                                               sizeof(*grown) * (size_t)new_capacity);
+                        if (grown == NULL) return 0;
+                        local->items = grown;
+                        local->capacity = new_capacity;
+                    }
+                    local->items[local->used] = malloc(line_length + 1);
+                    if (local->items[local->used] == NULL) return 0;
+                    memcpy(local->items[local->used], data + trimmed_start, line_length);
+                    local->items[local->used][line_length] = '\0';
+                    local->used++;
+                    local->count++;
+                }
             }
         }
-        if (position + (long)target_length > visible_end) continue;
-        trimmed_start = line_start;
-        trimmed_end = visible_end;
-        while (trimmed_start < trimmed_end &&
-               isspace((unsigned char)data[trimmed_start])) trimmed_start++;
-        while (trimmed_end > trimmed_start &&
-               isspace((unsigned char)data[trimmed_end - 1])) trimmed_end--;
-        if (position < trimmed_start || position + (long)target_length > trimmed_end) continue;
-
-        line_length = (size_t)(trimmed_end - trimmed_start);
-        if (local->used == local->capacity) {
-            int new_capacity = local->capacity == 0 ? 8 : local->capacity * 2;
-            char **grown = realloc(local->items, sizeof(*grown) * (size_t)new_capacity);
-            if (grown == NULL) return 0;
-            local->items = grown;
-            local->capacity = new_capacity;
-        }
-        local->items[local->used] = malloc(line_length + 1);
-        if (local->items[local->used] == NULL) return 0;
-        memcpy(local->items[local->used], data + trimmed_start, line_length);
-        local->items[local->used][line_length] = '\0';
-        local->used++;
-        local->count++;
+        position++;
     }
     return 1;
 }

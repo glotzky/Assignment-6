@@ -9,6 +9,7 @@
 
 #define MAX_LINE_LENGTH 256
 #define MAX_WORKERS 4
+#define SMALL_FILE_LIMIT (8L * 1024L * 1024L)
 
 struct local_instance {
     char **items;
@@ -48,14 +49,21 @@ static char *read_file_buffer(char *filename, long *file_size) {
 static int count_chunk(const char *data, long start, long end, long file_size,
                        const char *target, size_t target_length) {
     int count = 0;
+    long position = start;
 
-    for (long position = start;
-         position < end && position + (long)target_length <= file_size;
-         position++) {
-        if (memcmp(data + position, target, target_length) == 0 &&
+    while (position < end &&
+           position + (long)target_length <= file_size) {
+        const char *candidate = memchr(data + position, target[0],
+                                       (size_t)(end - position));
+
+        if (candidate == NULL) break;
+        position = (long)(candidate - data);
+        if (position + (long)target_length <= file_size &&
+            memcmp(data + position, target, target_length) == 0 &&
             memchr(data + position, '\n', target_length) == NULL) {
             count++;
         }
+        position++;
     }
     return count;
 }
@@ -136,6 +144,11 @@ int search_count(char *filename, char *target) {
         free(data);
         return 0;
     }
+    if (file_size <= SMALL_FILE_LIMIT) {
+        total = count_chunk(data, 0, file_size, file_size, target, target_length);
+        free(data);
+        return total;
+    }
     if (thread_count < 1) thread_count = 1;
     if (thread_count > MAX_WORKERS) thread_count = MAX_WORKERS;
     if (thread_count > file_size) thread_count = (int)file_size;
@@ -164,6 +177,20 @@ struct count_result search_instance(char *filename, char *target) {
     target_length = strlen(target);
     data = read_file_buffer(filename, &file_size);
     if (data == NULL || file_size == 0) {
+        free(data);
+        return result;
+    }
+    if (file_size <= SMALL_FILE_LIMIT) {
+        struct local_instance local = {0};
+
+        if (!scan_chunk(data, 0, file_size, file_size, target,
+                        target_length, &local)) {
+            free_local_instance(&local);
+            free(data);
+            return result;
+        }
+        result.count = local.count;
+        result.instances = local.items;
         free(data);
         return result;
     }
